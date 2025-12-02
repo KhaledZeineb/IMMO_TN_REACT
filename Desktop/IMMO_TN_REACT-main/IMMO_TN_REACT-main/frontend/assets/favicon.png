@@ -1,0 +1,7 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 20010904//EN" "http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd">
+<svg version="1.0" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+<rect width="48" height="48" fill="#2196F3"/>
+<path d="M24 8L8 18V30L24 40L40 30V18L24 8Z" fill="#FFFFFF"/>
+<path d="M24 20L16 24V32L24 36L32 32V24L24 20Z" fill="#2196F3"/>
+</svg>
