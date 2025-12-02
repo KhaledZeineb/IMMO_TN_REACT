@@ -1,0 +1,986 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  Image,
+  TextInput,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
+  Modal,
+  ScrollView,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import { COLORS, formatPrice, PROPERTY_TYPES, TRANSACTION_TYPES, CITIES } from '../../utils/constants';
+import api from '../../services/api';
+import { useNotifications } from '../../context/NotificationContext';
+import { useAuth } from '../../context/AuthContext';
+
+export default function HomeScreen({ navigation }) {
+  const [properties, setProperties] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedType, setSelectedType] = useState('all');
+  const [selectedTransaction, setSelectedTransaction] = useState('all');
+  const [showFilters, setShowFilters] = useState(false);
+  const [priceRange, setPriceRange] = useState({ min: '', max: '' });
+  const [selectedCity, setSelectedCity] = useState('all');
+  const [favorites, setFavorites] = useState([]);
+  const { unreadCount } = useNotifications();
+  const { isAuthenticated, user } = useAuth();
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [propertyToDelete, setPropertyToDelete] = useState(null);
+
+  const requireAuth = (action, callback) => {
+    if (!isAuthenticated) {
+      Alert.alert(
+        'Connexion requise',
+        'Vous devez vous connecter pour accéder à cette fonctionnalité.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          { text: 'Se connecter', onPress: () => navigation.navigate('Login') }
+        ]
+      );
+      return;
+    }
+    callback();
+  };
+
+  useEffect(() => {
+    fetchProperties();
+    if (isAuthenticated) {
+      fetchFavorites();
+    }
+  }, [isAuthenticated]);
+
+  // Refresh when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchProperties();
+      if (isAuthenticated) {
+        fetchFavorites();
+      }
+    }, [isAuthenticated])
+  );
+
+  const fetchProperties = async () => {
+    try {
+      const response = await api.get('/properties');
+      // Ensure we always set an array
+      const data = Array.isArray(response.data) ? response.data : [];
+      setProperties(data);
+    } catch (error) {
+      console.error('Error fetching properties:', error);
+      setProperties([]); // Set empty array on error
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  const fetchFavorites = async () => {
+    try {
+      const response = await api.get('/favorites');
+      setFavorites(response.data.map(fav => fav.property_id));
+    } catch (error) {
+      console.error('Error fetching favorites:', error);
+    }
+  };
+
+  const handleDelete = (propertyId) => {
+    setPropertyToDelete(propertyId);
+    setShowDeleteModal(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!propertyToDelete) return;
+
+    setShowDeleteModal(false);
+    try {
+      await api.delete(`/properties/${propertyToDelete}`);
+      fetchProperties();
+    } catch (error) {
+      console.error('Error deleting property:', error);
+      alert('Erreur: ' + (error.response?.data?.message || 'Impossible de supprimer la propriété'));
+    } finally {
+      setPropertyToDelete(null);
+    }
+  };
+
+  const cancelDelete = () => {
+    setShowDeleteModal(false);
+    setPropertyToDelete(null);
+  };
+
+  const toggleFavorite = async (propertyId, event) => {
+    if (event) {
+      event.stopPropagation();
+    }
+
+    if (!isAuthenticated) {
+      Alert.alert('Connexion requise', 'Connectez-vous pour ajouter aux favoris');
+      navigation.navigate('Login');
+      return;
+    }
+
+    if (user?.role === 'visitor') {
+      Alert.alert(
+        'Accès restreint',
+        'Les visiteurs ne peuvent pas ajouter aux favoris. Passez au rôle Acheteur.',
+        [
+          { text: 'Annuler', style: 'cancel' },
+          { 
+            text: 'Modifier mon profil', 
+            onPress: () => navigation.navigate('EditProfile')
+          },
+        ]
+      );
+      return;
+    }
+
+    const isFavorite = favorites.includes(propertyId);
+
+    try {
+      if (isFavorite) {
+        await api.delete(`/favorites/${propertyId}`);
+        setFavorites(favorites.filter(id => id !== propertyId));
+      } else {
+        await api.post('/favorites', { propertyId });
+        setFavorites([...favorites, propertyId]);
+      }
+    } catch (error) {
+      console.error('Error toggling favorite:', error);
+      const errorMsg = error.response?.data?.message || 'Une erreur est survenue';
+      Alert.alert('Erreur', errorMsg);
+    }
+  };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchProperties();
+  };
+
+  const filteredProperties = Array.isArray(properties) ? properties.filter(property => {
+    const matchesSearch = property?.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         property?.city?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         property?.address?.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesType = selectedType === 'all' || property?.type === selectedType;
+    const matchesTransaction = selectedTransaction === 'all' || property?.transaction_type === selectedTransaction;
+    const matchesCity = selectedCity === 'all' || property?.city === selectedCity;
+    
+    let matchesPrice = true;
+    if (priceRange.min !== '' && property?.price) {
+      matchesPrice = matchesPrice && property.price >= parseFloat(priceRange.min);
+    }
+    if (priceRange.max !== '' && property?.price) {
+      matchesPrice = matchesPrice && property.price <= parseFloat(priceRange.max);
+    }
+    
+    return matchesSearch && matchesType && matchesTransaction && matchesCity && matchesPrice;
+  }) : [];
+
+  const renderProperty = ({ item }) => {
+    const isFavorite = favorites.includes(item.id);
+    
+    // Get first image from images array or fallback to single image field
+    const displayImage = item.images && Array.isArray(item.images) && item.images.length > 0
+      ? item.images[0]
+      : (item.image || 'https://via.placeholder.com/300x200');
+    
+    // Count total images for badge
+    const imageCount = item.images && Array.isArray(item.images) ? item.images.length : (item.image ? 1 : 0);
+    
+    return (
+      <TouchableOpacity
+        style={styles.propertyCard}
+        onPress={() => navigation.navigate('PropertyDetails', { propertyId: item.id })}
+      >
+        <Image
+          source={{ uri: displayImage }}
+          style={styles.propertyImage}
+        />
+        {imageCount > 1 && (
+          <View style={styles.imageCountBadge}>
+            <Ionicons name="images" size={14} color={COLORS.white} />
+            <Text style={styles.imageCountText}>{imageCount}</Text>
+          </View>
+        )}
+        <TouchableOpacity
+          style={styles.favoriteButton}
+          onPress={(e) => {
+            e.stopPropagation();
+            toggleFavorite(item.id, e);
+          }}
+          activeOpacity={0.7}
+        >
+          <Ionicons 
+            name={isFavorite ? 'heart' : 'heart-outline'} 
+            size={24} 
+            color={isFavorite ? COLORS.danger : COLORS.white} 
+          />
+        </TouchableOpacity>
+        <View style={styles.propertyInfo}>
+        <Text style={styles.propertyTitle} numberOfLines={1}>
+          {item.title}
+        </Text>
+        <View style={styles.propertyDetails}>
+          <Ionicons name="location-outline" size={14} color={COLORS.gray} />
+          <Text style={styles.propertyLocation}>{item.city || 'N/A'}</Text>
+        </View>
+        <View style={styles.propertyStats}>
+          <View style={styles.stat}>
+            <Ionicons name="bed-outline" size={16} color={COLORS.primary} />
+            <Text style={styles.statText}>{item.bedrooms}</Text>
+          </View>
+          <View style={styles.stat}>
+            <Ionicons name="water-outline" size={16} color={COLORS.primary} />
+            <Text style={styles.statText}>{item.bathrooms}</Text>
+          </View>
+          <View style={styles.stat}>
+            <Ionicons name="expand-outline" size={16} color={COLORS.primary} />
+            <Text style={styles.statText}>{item.surface} m²</Text>
+          </View>
+        </View>
+        <View style={styles.propertyFooter}>
+          <Text style={styles.propertyPrice}>{formatPrice(item.price)}</Text>
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{item.transaction_type}</Text>
+          </View>
+        </View>
+        {user && Number(item.user_id) === Number(user.id) && (
+          <View style={styles.ownerActions}>
+            <TouchableOpacity
+              style={styles.editButton}
+              onPress={(e) => {
+                e.stopPropagation();
+                console.log('Edit button clicked for property:', item.id);
+                navigation.navigate('EditProperty', { propertyId: item.id });
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color={COLORS.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={(e) => {
+                e.stopPropagation();
+                console.log('Delete button clicked');
+                handleDelete(item.id);
+              }}
+            >
+              <Ionicons name="trash-outline" size={20} color={COLORS.danger} />
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderHeader = () => (
+    <View style={styles.header}>
+      <View style={styles.headerTop}>
+        <View>
+          <Text style={styles.greeting}>
+            Bonjour {user?.name?.split(' ')[0] || '👋'}
+          </Text>
+          <Text style={styles.headerTitle}>Trouvez votre propriété</Text>
+        </View>
+        <View style={styles.headerIcons}>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => requireAuth('notifications', () => navigation.navigate('Notifications'))}
+          >
+            <Ionicons name="notifications-outline" size={24} color={COLORS.dark} />
+            {isAuthenticated && unreadCount > 0 && (
+              <View style={styles.badge2}>
+                <Text style={styles.badgeText2}>{unreadCount}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.iconButton}
+            onPress={() => requireAuth('assistant', () => navigation.navigate('AIAssistant'))}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={24} color={COLORS.dark} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <View style={styles.searchContainer}>
+        <Ionicons name="search-outline" size={20} color={COLORS.gray} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Rechercher une propriété..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+      </View>
+
+      <View style={styles.filterContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+          <TouchableOpacity
+            style={[styles.filterButton, selectedType === 'all' && styles.filterButtonActive]}
+            onPress={() => setSelectedType('all')}
+          >
+            <Text style={[styles.filterText, selectedType === 'all' && styles.filterTextActive]}>
+              Tous
+            </Text>
+          </TouchableOpacity>
+          {Object.entries(PROPERTY_TYPES).map(([key, value]) => (
+            <TouchableOpacity
+              key={key}
+              style={[styles.filterButton, selectedType === key && styles.filterButtonActive]}
+              onPress={() => setSelectedType(key)}
+            >
+              <Text style={[styles.filterText, selectedType === key && styles.filterTextActive]}>
+                {value}
+              </Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            style={styles.advancedFilterButton}
+            onPress={() => setShowFilters(true)}
+          >
+            <Ionicons name="options-outline" size={20} color={COLORS.white} />
+            <Text style={styles.advancedFilterText}>Filtres</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+    </View>
+  );
+
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <FlatList
+        data={filteredProperties}
+        renderItem={renderProperty}
+        keyExtractor={(item) => item.id.toString()}
+        ListHeaderComponent={renderHeader}
+        contentContainerStyle={styles.listContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Ionicons name="home-outline" size={80} color={COLORS.gray} />
+            <Text style={styles.emptyText}>Aucune propriété trouvée</Text>
+          </View>
+        }
+      />
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => requireAuth('add property', () => navigation.navigate('AddProperty'))}
+      >
+        <Ionicons name="add" size={30} color={COLORS.white} />
+      </TouchableOpacity>
+
+      {/* Advanced Filters Modal */}
+      <Modal
+        visible={showFilters}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowFilters(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Filtres avancés</Text>
+              <TouchableOpacity onPress={() => setShowFilters(false)}>
+                <Ionicons name="close" size={28} color={COLORS.dark} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody}>
+              {/* Transaction Type */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Type de transaction</Text>
+                <View style={styles.filterOptions}>
+                  <TouchableOpacity
+                    style={[styles.filterOption, selectedTransaction === 'all' && styles.filterOptionActive]}
+                    onPress={() => setSelectedTransaction('all')}
+                  >
+                    <Text style={[styles.filterOptionText, selectedTransaction === 'all' && styles.filterOptionTextActive]}>
+                      Tous
+                    </Text>
+                  </TouchableOpacity>
+                  {Object.entries(TRANSACTION_TYPES).map(([key, value]) => (
+                    <TouchableOpacity
+                      key={key}
+                      style={[styles.filterOption, selectedTransaction === key && styles.filterOptionActive]}
+                      onPress={() => setSelectedTransaction(key)}
+                    >
+                      <Text style={[styles.filterOptionText, selectedTransaction === key && styles.filterOptionTextActive]}>
+                        {value}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* City Filter */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Ville</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <View style={styles.filterOptions}>
+                    <TouchableOpacity
+                      style={[styles.filterOption, selectedCity === 'all' && styles.filterOptionActive]}
+                      onPress={() => setSelectedCity('all')}
+                    >
+                      <Text style={[styles.filterOptionText, selectedCity === 'all' && styles.filterOptionTextActive]}>
+                        Toutes
+                      </Text>
+                    </TouchableOpacity>
+                    {CITIES.slice(0, 10).map((city) => (
+                      <TouchableOpacity
+                        key={city}
+                        style={[styles.filterOption, selectedCity === city && styles.filterOptionActive]}
+                        onPress={() => setSelectedCity(city)}
+                      >
+                        <Text style={[styles.filterOptionText, selectedCity === city && styles.filterOptionTextActive]}>
+                          {city}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </ScrollView>
+              </View>
+
+              {/* Price Range */}
+              <View style={styles.filterSection}>
+                <Text style={styles.filterLabel}>Fourchette de prix (TND)</Text>
+                <View style={styles.priceInputs}>
+                  <TextInput
+                    style={styles.priceInput}
+                    placeholder="Min"
+                    keyboardType="numeric"
+                    value={priceRange.min}
+                    onChangeText={(text) => setPriceRange({ ...priceRange, min: text })}
+                  />
+                  <Text style={styles.priceSeparator}>-</Text>
+                  <TextInput
+                    style={styles.priceInput}
+                    placeholder="Max"
+                    keyboardType="numeric"
+                    value={priceRange.max}
+                    onChangeText={(text) => setPriceRange({ ...priceRange, max: text })}
+                  />
+                </View>
+              </View>
+
+              {/* Reset and Apply Buttons */}
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  style={styles.resetButton}
+                  onPress={() => {
+                    setSelectedTransaction('all');
+                    setSelectedCity('all');
+                    setPriceRange({ min: '', max: '' });
+                  }}
+                >
+                  <Text style={styles.resetButtonText}>Réinitialiser</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.applyButton}
+                  onPress={() => setShowFilters(false)}
+                >
+                  <Text style={styles.applyButtonText}>Appliquer</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de confirmation de suppression */}
+      <Modal
+        visible={showDeleteModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={cancelDelete}
+      >
+        <View style={styles.deleteModalOverlay}>
+          <View style={styles.deleteModalContent}>
+            <View style={styles.deleteModalHeader}>
+              <Ionicons name="trash" size={30} color={COLORS.danger} />
+              <Text style={styles.deleteModalTitle}>Supprimer la propriété</Text>
+            </View>
+
+            <Text style={styles.deleteModalMessage}>
+              Êtes-vous sûr de vouloir supprimer cette propriété ? Cette action est irréversible.
+            </Text>
+
+            <View style={styles.deleteModalButtons}>
+              <TouchableOpacity
+                style={[styles.deleteModalButton, styles.cancelDeleteButton]}
+                onPress={cancelDelete}
+              >
+                <Text style={styles.cancelDeleteButtonText}>Annuler</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.deleteModalButton, styles.confirmDeleteButton]}
+                onPress={confirmDelete}
+              >
+                <Text style={styles.confirmDeleteButtonText}>Supprimer</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  header: {
+    padding: 20,
+    paddingTop: 50,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  greeting: {
+    fontSize: 16,
+    color: COLORS.gray,
+  },
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: COLORS.dark,
+  },
+  headerIcons: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  iconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.light,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  badge2: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: COLORS.danger,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  badgeText2: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.light,
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    marginBottom: 20,
+  },
+  searchInput: {
+    flex: 1,
+    height: 50,
+    marginLeft: 10,
+    fontSize: 16,
+  },
+  filterContainer: {
+    flexDirection: 'row',
+    marginBottom: 10,
+  },
+  filterButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.light,
+  },
+  filterButtonActive: {
+    backgroundColor: COLORS.primary,
+  },
+  filterText: {
+    fontSize: 14,
+    color: COLORS.gray,
+  },
+  filterTextActive: {
+    color: COLORS.white,
+    fontWeight: 'bold',
+  },
+  advancedFilterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: COLORS.secondary,
+    gap: 5,
+  },
+  advancedFilterText: {
+    fontSize: 14,
+    color: COLORS.white,
+    fontWeight: 'bold',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 25,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: COLORS.dark,
+  },
+  modalBody: {
+    padding: 20,
+  },
+  filterSection: {
+    marginBottom: 25,
+  },
+  filterLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.dark,
+    marginBottom: 12,
+  },
+  filterOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  filterOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: COLORS.light,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  filterOptionActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  filterOptionText: {
+    fontSize: 14,
+    color: COLORS.gray,
+  },
+  filterOptionTextActive: {
+    color: COLORS.white,
+    fontWeight: '600',
+  },
+  priceInputs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  priceInput: {
+    flex: 1,
+    height: 50,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    fontSize: 16,
+    backgroundColor: COLORS.light,
+  },
+  priceSeparator: {
+    fontSize: 18,
+    color: COLORS.gray,
+    fontWeight: 'bold',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  resetButton: {
+    flex: 1,
+    padding: 15,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    alignItems: 'center',
+  },
+  resetButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: COLORS.primary,
+  },
+  applyButton: {
+    flex: 1,
+    padding: 15,
+    borderRadius: 10,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+  },
+  applyButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: COLORS.white,
+  },
+  listContent: {
+    paddingBottom: 100,
+  },
+  propertyCard: {
+    marginHorizontal: 20,
+    marginBottom: 20,
+    borderRadius: 15,
+    backgroundColor: COLORS.white,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  propertyImage: {
+    width: '100%',
+    height: 200,
+    borderTopLeftRadius: 15,
+    borderTopRightRadius: 15,
+  },
+  favoriteButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  imageCountBadge: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 4,
+    zIndex: 1,
+  },
+  imageCountText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  propertyInfo: {
+    padding: 15,
+  },
+  ownerActions: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 15,
+    paddingHorizontal: 15,
+    paddingBottom: 15,
+    paddingTop: 5,
+  },
+  editButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.light,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  deleteButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.light,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.danger,
+  },
+  propertyTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: COLORS.dark,
+    marginBottom: 5,
+  },
+  propertyDetails: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  propertyLocation: {
+    fontSize: 14,
+    color: COLORS.gray,
+    marginLeft: 5,
+  },
+  propertyStats: {
+    flexDirection: 'row',
+    gap: 15,
+    marginBottom: 10,
+  },
+  stat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  statText: {
+    fontSize: 14,
+    color: COLORS.dark,
+  },
+  propertyFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  propertyPrice: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: COLORS.primary,
+  },
+  badge: {
+    backgroundColor: COLORS.secondary,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 15,
+  },
+  badgeText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    marginTop: 50,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: COLORS.gray,
+    marginTop: 10,
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 20,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: COLORS.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 8,
+  },
+  deleteModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteModalContent: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    padding: 25,
+    marginHorizontal: 30,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  deleteModalHeader: {
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  deleteModalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: COLORS.dark,
+    marginTop: 10,
+  },
+  deleteModalMessage: {
+    fontSize: 16,
+    color: COLORS.gray,
+    textAlign: 'center',
+    marginBottom: 25,
+    lineHeight: 22,
+  },
+  deleteModalButtons: {
+    flexDirection: 'row',
+    gap: 15,
+  },
+  deleteModalButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 25,
+    borderRadius: 10,
+    minWidth: 100,
+    alignItems: 'center',
+  },
+  cancelDeleteButton: {
+    backgroundColor: COLORS.light,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  cancelDeleteButtonText: {
+    color: COLORS.gray,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  confirmDeleteButton: {
+    backgroundColor: COLORS.danger,
+  },
+  confirmDeleteButtonText: {
+    color: COLORS.white,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+});
